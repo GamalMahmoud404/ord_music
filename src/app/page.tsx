@@ -213,34 +213,78 @@ export default function HomePage() {
     });
   }
 
+  async function readJsonResponse<T>(response: Response): Promise<T> {
+    const text = await response.text();
+    let data: unknown;
+    try { data = text ? JSON.parse(text) : {}; }
+    catch { throw new Error(`Server returned a non-JSON response (${response.status}). ${text.slice(0, 180)}`); }
+    if (!response.ok) {
+      const message = data && typeof data === "object" && "error" in data && typeof (data as { error?: unknown }).error === "string"
+        ? (data as { error: string }).error
+        : `Request failed (${response.status}).`;
+      throw new Error(message);
+    }
+    return data as T;
+  }
+
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!files.length) return;
     setUploading(true);
     setUploadError("");
+    let added = 0;
+    let firstTrack: Track | undefined;
     try {
-      const durations = await Promise.all(files.map(readDuration));
-      const formData = new FormData();
-      files.forEach((file) => formData.append("files", file));
-      formData.append("durations", JSON.stringify(durations));
-      formData.append("artist", uploadArtist);
-      formData.append("album", uploadAlbum);
-      formData.append("mood", uploadMood);
-      const response = await fetch("/api/tracks/upload", { method: "POST", body: formData });
-      const result = await response.json() as { error?: string; tracks?: Track[]; count?: number };
-      if (!response.ok) throw new Error(result.error || "Upload failed.");
-      const refreshed = await fetch("/api/tracks", { cache: "no-store" });
-      if (!refreshed.ok) throw new Error("Songs uploaded, but the library could not refresh. Reload the page.");
-      const allTracks = await refreshed.json() as Track[];
-      setTracks(allTracks);
-      if (result.tracks?.[0]) { setCurrentId(result.tracks[0].id); setProgress(0); setIsPlaying(false); }
+      for (const file of files) {
+        const durationSeconds = await readDuration(file);
+        const signed = await readJsonResponse<{ uploadUrl: string; publicUrl: string; contentType: string }>(await fetch("/api/tracks/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName: file.name, contentType: file.type || "application/octet-stream", size: file.size }),
+        }));
+
+        const storageForm = new FormData();
+        storageForm.append("cacheControl", "3600");
+        storageForm.append("", file);
+        const storageResponse = await fetch(signed.uploadUrl, {
+          method: "PUT",
+          headers: { "x-upsert": "false" },
+          body: storageForm,
+        });
+        if (!storageResponse.ok) {
+          const storageText = await storageResponse.text().catch(() => "");
+          throw new Error(`Storage upload failed (${storageResponse.status}). ${storageText.slice(0, 180)}`);
+        }
+
+        const registered = await readJsonResponse<{ track: Track }>(await fetch("/api/tracks/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileName: file.name,
+            contentType: file.type || signed.contentType,
+            audio: signed.publicUrl,
+            durationSeconds,
+            artist: uploadArtist,
+            album: uploadAlbum,
+            mood: uploadMood,
+          }),
+        }));
+        added += 1;
+        if (!firstTrack) firstTrack = registered.track;
+      }
+
+      const refreshed = await readJsonResponse<Track[]>(await fetch("/api/tracks", { cache: "no-store" }));
+      setTracks(refreshed);
+      if (firstTrack) { setCurrentId(firstTrack.id); setProgress(0); setIsPlaying(false); }
       setActiveTab("Library");
-      notify(`Added ${result.count ?? files.length} song${(result.count ?? files.length) === 1 ? "" : "s"} to your library.`);
+      notify(`Added ${added} song${added === 1 ? "" : "s"} to your library.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Upload failed.";
-      setUploadError(message);
+      setUploadError(added ? `${message} ${added} song(s) were uploaded successfully before the error.` : message);
       notify(message);
+      // Refresh the list in case a prior file completed before a later file failed.
+      fetch("/api/tracks", { cache: "no-store" }).then((response) => response.ok ? response.json() as Promise<Track[]> : null).then((data) => { if (data) setTracks(data); }).catch(() => undefined);
     } finally {
       setUploading(false);
     }

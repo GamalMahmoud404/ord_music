@@ -1,111 +1,70 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { databaseConfigurationError, databaseErrorMessage } from "@/lib/database-error";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set([".mp3", ".wav", ".ogg", ".oga", ".m4a", ".aac", ".flac", ".webm"]);
-const COLORS = ["#8deaff", "#ff9bd0", "#82f2c7", "#a9c5ff", "#ffc477", "#ffad8c"];
 
-function cleanText(value: FormDataEntryValue | null, fallback: string, maxLength = 120) {
-  if (typeof value !== "string") return fallback;
-  const clean = value.trim().slice(0, maxLength);
-  return clean || fallback;
-}
-
-function titleFromFilename(filename: string) {
-  return path.basename(filename, path.extname(filename)).replace(/[._]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180) || "Untitled track";
+function storageConfig() {
+  const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/$/, "");
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+  const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "tracks";
+  if (!supabaseUrl || !serviceKey) return null;
+  try {
+    const parsed = new URL(supabaseUrl);
+    if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") return null;
+  } catch { return null; }
+  return { supabaseUrl, serviceKey, bucket };
 }
 
 export async function POST(request: Request) {
-  const configurationError = databaseConfigurationError();
-  if (configurationError) {
-    return NextResponse.json({ error: configurationError }, { status: 503 });
+  const config = storageConfig();
+  if (!config) {
+    return NextResponse.json({ error: "Audio storage is not configured. Add SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET to Vercel Environment Variables." }, { status: 503 });
   }
 
-  const savedPaths: string[] = [];
-  const createdIds: string[] = [];
   try {
-    const formData = await request.formData();
-    const files = formData.getAll("files").filter((item): item is File => item instanceof File);
-    if (!files.length) return NextResponse.json({ error: "Choose at least one audio file." }, { status: 400 });
-    if (files.length > 30) return NextResponse.json({ error: "Upload up to 30 songs at a time." }, { status: 400 });
-
-    const artist = cleanText(formData.get("artist"), "Unknown artist");
-    const album = cleanText(formData.get("album"), "Unknown album");
-    const mood = cleanText(formData.get("mood"), "Uncategorized", 40);
-    let durations: number[] = [];
-    const rawDurations = formData.get("durations");
-    if (typeof rawDurations === "string") {
-      try { const parsed: unknown = JSON.parse(rawDurations); if (Array.isArray(parsed)) durations = parsed.map((v) => Number(v)); } catch { /* optional browser metadata */ }
+    const body = await request.json() as { fileName?: unknown; contentType?: unknown; size?: unknown };
+    const fileName = typeof body.fileName === "string" ? path.basename(body.fileName) : "";
+    const extension = path.extname(fileName).toLowerCase();
+    const size = Number(body.size);
+    if (!fileName || !ALLOWED_EXTENSIONS.has(extension)) {
+      return NextResponse.json({ error: "Unsupported audio format. Use MP3, WAV, OGG, M4A, AAC, FLAC, or WEBM." }, { status: 400 });
+    }
+    if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: "Each audio file must be larger than 0 bytes and no larger than 50 MB." }, { status: 413 });
     }
 
-    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (totalBytes > 100 * 1024 * 1024) {
-      return NextResponse.json({ error: "The combined upload must be 100 MB or less." }, { status: 413 });
+    const objectPath = `audio/${randomUUID()}${extension}`;
+    const encodedBucket = encodeURIComponent(config.bucket);
+    const encodedPath = objectPath.split("/").map(encodeURIComponent).join("/");
+    const storageBase = `${config.supabaseUrl}/storage/v1`;
+    const signedResponse = await fetch(`${storageBase}/object/upload/sign/${encodedBucket}/${encodedPath}`, {
+      method: "POST",
+      headers: {
+        apikey: config.serviceKey,
+        Authorization: `Bearer ${config.serviceKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({}),
+      cache: "no-store",
+    });
+    const responseText = await signedResponse.text();
+    let signedData: { url?: string; token?: string; signedURL?: string; message?: string; error?: string } = {};
+    try { signedData = JSON.parse(responseText); } catch { /* handled below without leaking credentials */ }
+    if (!signedResponse.ok || !(signedData.url || signedData.signedURL)) {
+      console.error("Supabase signed-upload URL request failed:", signedResponse.status, responseText.slice(0, 500));
+      return NextResponse.json({ error: "Could not prepare audio storage upload. Check the Supabase URL, service role key, and that the storage bucket exists." }, { status: 502 });
     }
-
-    for (const file of files) {
-      const extension = path.extname(file.name).toLowerCase();
-      if (!ALLOWED_EXTENSIONS.has(extension)) {
-        return NextResponse.json({ error: `Unsupported audio format: ${file.name}. Use MP3, WAV, OGG, M4A, AAC, FLAC, or WEBM.` }, { status: 400 });
-      }
-      if (file.size <= 0 || file.size > MAX_FILE_SIZE) {
-        return NextResponse.json({ error: `${file.name} is empty or larger than 50 MB.` }, { status: 413 });
-      }
-    }
-
-    const uploadDir = path.join(process.cwd(), "public", "uploads");
-    await mkdir(uploadDir, { recursive: true });
-    const existingCount = await prisma.track.count();
-    const created = [];
-
-    for (let index = 0; index < files.length; index++) {
-      const file = files[index];
-      const extension = path.extname(file.name).toLowerCase();
-      const filename = `${randomUUID()}${extension}`;
-      const absolutePath = path.join(uploadDir, filename);
-      await writeFile(absolutePath, Buffer.from(await file.arrayBuffer()), { flag: "wx" });
-      savedPaths.push(absolutePath);
-
-      const baseTitle = titleFromFilename(file.name);
-      let title = baseTitle;
-      let suffix = 2;
-      while (await prisma.track.findUnique({ where: { title }, select: { id: true } })) {
-        title = `${baseTitle} (${suffix++})`;
-      }
-      const durationSeconds = Number(durations[index]);
-      const duration = Number.isFinite(durationSeconds) && durationSeconds > 0
-        ? `${Math.floor(durationSeconds / 60)}:${String(Math.floor(durationSeconds % 60)).padStart(2, "0")}`
-        : "0:00";
-
-      const track = await prisma.track.create({
-        data: {
-          title,
-          artist,
-          album,
-          duration,
-          mood,
-          color: COLORS[(existingCount + index) % COLORS.length],
-          cover: "",
-          audio: `/uploads/${filename}`,
-          order: existingCount + index + 1,
-        },
-      });
-      created.push(track);
-      createdIds.push(track.id);
-    }
-
-    return NextResponse.json({ tracks: created, count: created.length }, { status: 201 });
+    const signedPath = signedData.url || signedData.signedURL || "";
+    const uploadUrl = `${storageBase}${signedPath.startsWith("/") ? signedPath : `/${signedPath}`}`;
+    const publicUrl = `${storageBase}/object/public/${encodedBucket}/${encodedPath}`;
+    return NextResponse.json({ uploadUrl, publicUrl, path: objectPath, contentType: typeof body.contentType === "string" ? body.contentType : "application/octet-stream" });
   } catch (error) {
-    if (createdIds.length) await prisma.track.deleteMany({ where: { id: { in: createdIds } } }).catch(() => undefined);
-    await Promise.all(savedPaths.map((filePath) => unlink(filePath).catch(() => undefined)));
     console.error("POST /api/tracks/upload failed:", error);
-    return NextResponse.json({ error: databaseErrorMessage(error) }, { status: 500 });
+    return NextResponse.json({ error: "Could not prepare this upload. Please try again." }, { status: 500 });
   }
 }

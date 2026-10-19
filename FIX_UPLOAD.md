@@ -1,20 +1,27 @@
-# Fixing MongoDB / song upload errors
+# Fixing audio upload on Vercel (413 and invalid JSON)
 
-The uploaded project configuration used a MongoDB Atlas URL with no database name in the path (it ended in `mongodb.net/?...`). Prisma may then target a default database instead of `orb_music`, which can fail when the database user is scoped to a specific database. The API now detects this configuration before attempting to list or upload tracks and returns a clear setup message.
+The app no longer sends the audio bytes through a Next.js/Vercel API route. It asks the server for a short-lived Supabase Storage signed upload URL, uploads each audio file directly from the browser to Supabase, then saves only the public audio URL and track metadata in MongoDB. This avoids Vercel's request-body size limit and prevents HTML/text error pages from being blindly parsed as JSON.
 
-1. Rotate your MongoDB Atlas database user's password if it was ever shared or included in an uploaded archive.
-2. Copy `.env.example` to `.env`.
-3. Put your real connection details in `.env` and make sure the URL contains `/orb_music` before the query string:
+## 1. Set up Supabase Storage
 
-   `DATABASE_URL="mongodb+srv://USERNAME:PASSWORD@YOUR_CLUSTER_HOST/orb_music?retryWrites=true&w=majority"`
+1. Create a Supabase project at https://supabase.com/.
+2. Open **Storage** and create a bucket named `tracks`.
+3. Make the bucket **Public** so the audio player can stream files.
+4. In Project Settings / API, copy the Project URL and the **service_role** key. Never expose the service role key in client-side code or commit it to GitHub.
 
-4. In Atlas Network Access, allow your current IP address. Ensure the database user has read/write access to `orb_music`.
-5. Run these commands from the project folder:
+## 2. Configure local `.env` and Vercel
 
-   ```powershell
-   npm install
-   npm run db:push
-   npm run dev
-   ```
+Copy `.env.example` to `.env` and fill in your real values. In Vercel, add these under **Settings → Environment Variables** for Production (and Preview if needed):
 
-`npm run db:push` must succeed before listing or uploading songs. The ZIP intentionally excludes `.env` and `.next`; never ship real database credentials in `.env.example`.
+- `DATABASE_URL` — MongoDB Atlas connection string with `/orb_music` before the query string.
+- `SUPABASE_URL` — your Supabase Project URL, e.g. `https://project-ref.supabase.co`.
+- `SUPABASE_SERVICE_ROLE_KEY` — your private service role key.
+- `SUPABASE_STORAGE_BUCKET` — `tracks` unless you chose another bucket name.
+
+Redeploy after changing environment variables. Do not prefix the service role key with `NEXT_PUBLIC_`.
+
+## 3. Limits and testing
+
+The app currently accepts audio files up to 50 MB each and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly.
+
+Run `npm install`, then `npm run build` locally before pushing. Make sure `.env` remains ignored by Git.
