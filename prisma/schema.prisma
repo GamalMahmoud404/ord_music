@@ -1,0 +1,23 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model Track {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  title          String   @unique
+  artist         String
+  album          String
+  duration       String
+  mood           String
+  color          String   @default("#8deaff")
+  cover          String
+  audio          String
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" role="img" aria-label="Orb Music abstract cover artwork">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#133d53"/><stop offset=".52" stop-color="#342b67"/><stop offset="1" stop-color="#6a2e64"/></linearGradient>
+    <radialGradient id="orb"><stop stop-color="#d5fbff"/><stop offset=".25" stop-color="#8deaff"/><stop offset=".68" stop-color="#9677ee" stop-opacity=".75"/><stop offset="1" stop-color="#9677ee" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="600" height="600" rx="42" fill="url(#bg)"/>
+  <circle cx="300" cy="280" r="230" fill="url(#orb)"/>
+  <circle cx="300" cy="280" r="126" fill="none" stroke="#eafaff" stroke-opacity=".78" stroke-width="2"/>
+  <circle cx="300" cy="280" r="96" fill="none" stroke="#eafaff" stroke-opacity=".4" stroke-width="1.5"/>
+  <path d="M78 390 C160 320 212 456 300 374 S445 320 522 395" fill="none" stroke="#d7faff" stroke-opacity=".72" stroke-width="3"/>
+  <g fill="#f6f5ff" font-family="Arial,sans-serif" text-anchor="middle"><text x="300" y="510" font-size="26" letter-spacing="8">ORB MUSIC</text><text x="300" y="540" font-size="12" letter-spacing="4" opacity=".7">YOUR SOUND, YOUR SPACE</text></g>
+</svg>
