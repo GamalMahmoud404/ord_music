@@ -23,7 +23,15 @@ function storageConfig() {
 export async function POST(request: Request) {
   const config = storageConfig();
   if (!config) {
-    return NextResponse.json({ error: "Audio storage is not configured. Add SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_STORAGE_BUCKET to Vercel Environment Variables." }, { status: 503 });
+    const missing = [
+      !process.env.SUPABASE_URL?.trim() ? "SUPABASE_URL" : null,
+      !process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ? "SUPABASE_SERVICE_ROLE_KEY" : null,
+    ].filter((name): name is string => Boolean(name));
+    console.error("Audio upload unavailable: missing or invalid Supabase server configuration", { missing });
+    return NextResponse.json({
+      error: `Audio storage is not configured on the server. Add ${missing.length ? missing.join(" and ") : "valid Supabase settings"} in Vercel → Settings → Environment Variables, then redeploy. SUPABASE_STORAGE_BUCKET is optional and defaults to tracks.`,
+      code: "AUDIO_STORAGE_NOT_CONFIGURED",
+    }, { status: 503 });
   }
 
   try {
@@ -53,14 +61,28 @@ export async function POST(request: Request) {
       cache: "no-store",
     });
     const responseText = await signedResponse.text();
-    let signedData: { url?: string; token?: string; signedURL?: string; message?: string; error?: string } = {};
+    let signedData: { url?: string; token?: string; signedURL?: string; signedUrl?: string; message?: string; error?: string } = {};
     try { signedData = JSON.parse(responseText); } catch { /* handled below without leaking credentials */ }
-    if (!signedResponse.ok || !(signedData.url || signedData.signedURL)) {
+    const rawSignedUrl = signedData.url || signedData.signedURL || signedData.signedUrl;
+    if (!signedResponse.ok || !rawSignedUrl) {
       console.error("Supabase signed-upload URL request failed:", signedResponse.status, responseText.slice(0, 500));
-      return NextResponse.json({ error: "Could not prepare audio storage upload. Check the Supabase URL, service role key, and that the storage bucket exists." }, { status: 502 });
+      return NextResponse.json({ error: "Supabase could not create a signed upload URL. Verify SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and that the storage bucket exists." }, { status: 502 });
     }
-    const signedPath = signedData.url || signedData.signedURL || "";
-    const uploadUrl = `${storageBase}${signedPath.startsWith("/") ? signedPath : `/${signedPath}`}`;
+    // Supabase versions may return an absolute URL, a /storage/v1/... path,
+    // or an /object/... path relative to the Storage API base.
+    const normalizedSignedUrl = rawSignedUrl.startsWith("http://") || rawSignedUrl.startsWith("https://")
+      ? rawSignedUrl
+      : rawSignedUrl.startsWith("/storage/v1/")
+        ? `${config.supabaseUrl}${rawSignedUrl}`
+        : rawSignedUrl.startsWith("/object/")
+          ? `${storageBase}${rawSignedUrl}`
+          : `${storageBase}/${rawSignedUrl.replace(/^\//, "")}`;
+    const parsedUploadUrl = new URL(normalizedSignedUrl);
+    // Some responses return the token separately instead of in the signed URL.
+    if (signedData.token && !parsedUploadUrl.searchParams.has("token")) {
+      parsedUploadUrl.searchParams.set("token", signedData.token);
+    }
+    const uploadUrl = parsedUploadUrl.toString();
     const publicUrl = `${storageBase}/object/public/${encodedBucket}/${encodedPath}`;
     return NextResponse.json({ uploadUrl, publicUrl, path: objectPath, contentType: typeof body.contentType === "string" ? body.contentType : "application/octet-stream" });
   } catch (error) {

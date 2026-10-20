@@ -20,8 +20,10 @@ Copy `.env.example` to `.env` and fill in your real values. In Vercel, add these
 
 Redeploy after changing environment variables. Do not prefix the service role key with `NEXT_PUBLIC_`.
 
+**If the upload request returns `503`**, the deployment does not have a usable `SUPABASE_URL` and/or `SUPABASE_SERVICE_ROLE_KEY`. The endpoint returns a JSON error naming the missing setting. Adding code alone cannot supply these secret values; add them in Vercel and redeploy. `SUPABASE_STORAGE_BUCKET` is optional because the app defaults it to `tracks`.
+
 ## 3. Limits and testing
 
-The app currently accepts audio files up to 50 MB each and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly.
+The app currently accepts audio files up to 50 MB each and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly. The browser now sends the raw audio file bytes to the signed Supabase URL rather than wrapping the file in multipart FormData.
 
 Run `npm install`, then `npm run build` locally before pushing. Make sure `.env` remains ignored by Git.

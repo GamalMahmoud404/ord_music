@@ -57,7 +57,7 @@ Never share `.env` or put real database credentials in `.env.example`. If a data
 
 ## Storage note
 
-The MongoDB record and the audio file are both required for playback. This implementation stores uploaded audio on the same server in `public/uploads/`; that works for local development and a persistent server, but may not persist across redeploys or work reliably on serverless hosting with an ephemeral filesystem. For those deployments, use durable object storage (such as S3-compatible storage) and store its permanent audio URL in MongoDB. The upload endpoint is intended for local/private use; add real authentication, authorization, and rate limiting before exposing uploads publicly.
+The MongoDB record and the audio file are both required for playback. This implementation stores uploaded audio on the same server in `public/uploads/`; that works for local development and a persistent server, but may not persist across redeploys or work reliably on serverless hosting with an ephemeral filesystem. For Vercel deployments, this version uses Supabase Storage signed uploads and stores the public audio URL in MongoDB. Configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Vercel and redeploy; without them, `/api/tracks/upload` returns 503. See `FIX_UPLOAD.md` for setup instructions. The upload endpoint is intended for local/private use; add real authentication, authorization, and rate limiting before exposing uploads publicly.
 
 ## Current limitations
 

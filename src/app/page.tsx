@@ -244,13 +244,14 @@ export default function HomePage() {
           body: JSON.stringify({ fileName: file.name, contentType: file.type || "application/octet-stream", size: file.size }),
         }));
 
-        const storageForm = new FormData();
-        storageForm.append("cacheControl", "3600");
-        storageForm.append("", file);
+        // Signed Storage uploads expect the file bytes, not multipart FormData.
         const storageResponse = await fetch(signed.uploadUrl, {
           method: "PUT",
-          headers: { "x-upsert": "false" },
-          body: storageForm,
+          headers: {
+            "x-upsert": "false",
+            "Content-Type": file.type || signed.contentType || "application/octet-stream",
+          },
+          body: file,
         });
         if (!storageResponse.ok) {
           const storageText = await storageResponse.text().catch(() => "");
