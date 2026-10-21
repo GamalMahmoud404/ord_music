@@ -7,6 +7,8 @@ const __dirname = dirname(__filename);
 const compat = new FlatCompat({ baseDirectory: __dirname });
 
 const eslintConfig = [
+  // Node.js CommonJS helper scripts are not part of the Next.js app bundle.
+  { ignores: ["scripts/**/*.cjs", "next-env.d.ts", ".next/**", "out/**", "node_modules/**"] },
   ...compat.extends("next/core-web-vitals", "next/typescript")
 ];
 

@@ -62,6 +62,7 @@ export default function HomePage() {
   const [toast, setToast] = useState("");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const currentIndex = tracks.findIndex((track) => track.id === currentId);
   const current = tracks[currentIndex] ?? tracks[0] ?? { id: "", title: "Your library is empty", artist: "Add your first song", album: "", duration: "0:00", mood: "Uncategorized", color: "#8deaff", cover: "", audio: "" };
@@ -78,11 +79,7 @@ export default function HomePage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/tracks")
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load tracks from database");
-        return response.json() as Promise<Track[]>;
-      })
+    loadTracks()
       .then((data) => {
         if (cancelled) return;
         setTracks(data);
@@ -105,6 +102,16 @@ export default function HomePage() {
   useEffect(() => {
     try { localStorage.setItem("orb-music-favorites", JSON.stringify(favorites)); } catch {}
   }, [favorites]);
+
+  // The search panel advertises an ESC shortcut, so Escape must actually close it.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSearchOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [searchOpen]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -135,13 +142,25 @@ export default function HomePage() {
 
   function notify(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(""), 2600);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(""), 2600);
   }
 
   function selectTrack(id: string, autoplay = true) {
     setCurrentId(id);
     setProgress(0);
+    setDuration(0);
     if (autoplay) setIsPlaying(true);
+  }
+
+  // Restarting the already-selected track (single-track library, repeat, or shuffle
+  // landing on the same song) must replay it instead of doing nothing.
+  function restartPlayback() {
+    const audio = audioRef.current;
+    if (audio) audio.currentTime = 0;
+    setProgress(0);
+    setDuration(0);
+    setIsPlaying(true);
   }
 
   function toggleFavorite(id: string) {
@@ -151,7 +170,9 @@ export default function HomePage() {
   function nextTrack() {
     if (!tracks.length) return;
     const next = shuffle ? tracks[Math.floor(Math.random() * tracks.length)] : tracks[(currentIndex + 1) % tracks.length];
-    if (next) selectTrack(next.id);
+    if (!next) return;
+    if (next.id === currentId) restartPlayback();
+    else selectTrack(next.id);
   }
 
   function previousTrack() {
@@ -163,7 +184,9 @@ export default function HomePage() {
     }
     if (!tracks.length) return;
     const previous = tracks[(currentIndex - 1 + tracks.length) % tracks.length];
-    if (previous) selectTrack(previous.id);
+    if (!previous) return;
+    if (previous.id === currentId) restartPlayback();
+    else selectTrack(previous.id);
   }
 
   function handleAuth(event: React.FormEvent<HTMLFormElement>) {
@@ -227,6 +250,22 @@ export default function HomePage() {
     return data as T;
   }
 
+  // One automatic retry: on serverless hosting a cold start plus a slow database
+  // can fail the first list request, which used to leave the library empty even
+  // though the songs exist in the database.
+  async function loadTracks(): Promise<Track[]> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await readJsonResponse<Track[]>(await fetch("/api/tracks", { cache: "no-store" }));
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, 700));
+      }
+    }
+    throw lastError;
+  }
+
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
@@ -275,9 +314,10 @@ export default function HomePage() {
         if (!firstTrack) firstTrack = registered.track;
       }
 
-      const refreshed = await readJsonResponse<Track[]>(await fetch("/api/tracks", { cache: "no-store" }));
+      const refreshed = await loadTracks();
       setTracks(refreshed);
       if (firstTrack) { setCurrentId(firstTrack.id); setProgress(0); setIsPlaying(false); }
+      setQuery("");
       setActiveTab("Library");
       notify(`Added ${added} song${added === 1 ? "" : "s"} to your library.`);
     } catch (error) {
@@ -285,7 +325,7 @@ export default function HomePage() {
       setUploadError(added ? `${message} ${added} song(s) were uploaded successfully before the error.` : message);
       notify(message);
       // Refresh the list in case a prior file completed before a later file failed.
-      fetch("/api/tracks", { cache: "no-store" }).then((response) => response.ok ? response.json() as Promise<Track[]> : null).then((data) => { if (data) setTracks(data); }).catch(() => undefined);
+      loadTracks().then(setTracks).catch(() => notify("The song was saved, but refreshing the list failed. Reload the page to see it."));
     } finally {
       setUploading(false);
     }
@@ -350,6 +390,11 @@ export default function HomePage() {
           </div>
 
           <div className="section-heading"><div><span className="section-kicker">{activeTab === "Favorites" ? "YOUR COLLECTION" : "YOUR SOUNDTRACK"}</span><h2>{activeTab === "Favorites" ? "Your favorites" : activeTab === "Moods" ? "Browse by mood" : activeTab === "Listen now" ? "Listen now" : activeTab === "Radio" ? "Radio" : "Your library"}</h2></div><button className="subtle-button" disabled={uploading} onClick={() => uploadInputRef.current?.click()}>{uploading ? <span className="upload-spinner"/> : <Upload size={14}/>} {uploading ? "Uploading…" : "Add songs"}</button></div>
+          <div className="upload-metadata">
+            <label>Artist<input value={uploadArtist} onChange={(event) => setUploadArtist(event.target.value)} placeholder="Unknown artist" /></label>
+            <label>Album<input value={uploadAlbum} onChange={(event) => setUploadAlbum(event.target.value)} placeholder="Unknown album" /></label>
+            <label>Mood<input value={uploadMood} onChange={(event) => setUploadMood(event.target.value)} placeholder="Uncategorized" /></label>
+          </div>
           {uploadError && <div className="upload-error" role="alert">{uploadError}</div>}
 
           <div className="track-table">
