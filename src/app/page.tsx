@@ -34,6 +34,16 @@ function isPlaybackAbort(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
+function playbackErrorMessage(audioUrl: string) {
+  const localPath = audioUrl.startsWith("/uploads/") || audioUrl.startsWith("/api/audio/");
+  const localHost = typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+  if (localPath && !localHost) {
+    return "This song's audio file is not deployed. Configure Supabase Storage, run npm run storage:migrate, then reload.";
+  }
+  return "The audio file could not be loaded. Check that its URL returns 200 (not 404), then try again.";
+}
+
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
   const mins = Math.floor(seconds / 60);
@@ -220,12 +230,12 @@ export default function HomePage() {
       if (promise) promise.catch((error: unknown) => {
         if (isPlaybackAbort(error)) return;
         setIsPlaying(false);
-        setToast("Audio could not start. Check your connection and try again.");
+        setToast(playbackErrorMessage(current.audio));
       });
     } else {
       audio.pause();
     }
-  }, [isPlaying, currentId]);
+  }, [isPlaying, currentId, current.audio]);
 
   const filteredTracks = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -265,7 +275,7 @@ export default function HomePage() {
       promise.catch((error: unknown) => {
         if (isPlaybackAbort(error)) return;
         setIsPlaying(false);
-        notify("Audio could not start. Check your connection and try again.");
+        notify(playbackErrorMessage(current.audio));
       });
     }
   }
@@ -587,7 +597,7 @@ export default function HomePage() {
       </div>
 
       <footer className="player-bar">
-        <audio ref={audioRef} src={current.audio || undefined} preload="metadata" onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onEnded={() => repeat ? restartPlayback() : nextTrack()} onError={() => { if (isPlaying) { setIsPlaying(false); notify("This audio could not load. Check the track URL in your database."); } }} />
+        <audio ref={audioRef} src={current.audio || undefined} preload="metadata" onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onEnded={() => repeat ? restartPlayback() : nextTrack()} onError={() => { if (isPlaying) { setIsPlaying(false); notify(playbackErrorMessage(current.audio)); } }} />
         <div className="now-playing"><Image src={current.cover || artistCover} alt="" width={48} height={48} unoptimized /><div className="now-copy"><strong>{current.title}</strong><span>{current.artist}</span></div><button className={`now-heart ${favorites.includes(current.id) ? "heart-on" : ""}`} aria-label="Favorite current track" disabled={!tracks.length} onClick={() => toggleFavorite(current.id)}><Heart size={17} fill={favorites.includes(current.id) ? "currentColor" : "none"}/></button></div>
         <div className="player-center"><div className="transport-controls"><button className={shuffle ? "transport-active" : ""} aria-label="Shuffle" onClick={() => setShuffle(!shuffle)}><Shuffle size={17}/></button><button aria-label="Previous track" disabled={!tracks.length} onClick={previousTrack}><SkipBack size={19} fill="currentColor"/></button><button className="transport-play" aria-label={isPlaying ? "Pause" : "Play"} disabled={!tracks.length} onClick={() => setIsPlaying(!isPlaying)}>{isPlaying ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button aria-label="Next track" disabled={!tracks.length} onClick={nextTrack}><SkipForward size={19} fill="currentColor"/></button><button className={repeat ? "transport-active" : ""} aria-label="Repeat" onClick={() => setRepeat(!repeat)}><Repeat2 size={17}/></button></div><div className="timeline"><span>{formatTime(progress)}</span><input aria-label="Track progress" type="range" min="0" max={duration || 100} value={Math.min(progress, duration || 100)} onChange={(event) => { const value = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = value; setProgress(value); }} style={{"--range-progress":`${duration ? progress / duration * 100 : 0}%`} as React.CSSProperties}/><span>{duration ? formatTime(duration) : current.duration}</span></div></div>
         <div className="player-right"><span className="volume-icon"><Volume2 size={18}/></span><input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} style={{"--range-progress":`${volume}%`} as React.CSSProperties}/><button aria-label="Queue" onClick={() => notify("Queue is ready for the next version.")}><ListMusic size={19}/></button></div>

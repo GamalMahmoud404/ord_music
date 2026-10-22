@@ -55,6 +55,8 @@ If the app opens on Vercel but the library is empty, work through this checklist
 
 The app now keeps a visible error panel with a **Retry** button when the library cannot be loaded, instead of hiding the error in a short toast.
 
+**Audio files on Vercel:** database rows are not enough — the audio files must also be reachable. Songs whose `audio` field starts with `/uploads/` point to the local `public/uploads/` folder, which is gitignored and is not present on Vercel; those songs will display but return `404` when played. Configure Supabase Storage (see `FIX_UPLOAD.md`), add the same variables to Vercel, then run `npm run storage:migrate` locally to upload the existing files and update their MongoDB URLs in place. New uploads through the app go straight to Supabase when it is configured.
+
 ## Add songs from your computer
 
 1. Start the app and connect the database.

@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "postinstall": "prisma generate",
     "db:push": "prisma db push",
-    "db:seed": "node scripts/seed-tracks.cjs"
+    "db:seed": "node scripts/seed-tracks.cjs",
+    "storage:migrate": "node --env-file=.env scripts/migrate-audio-to-supabase.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

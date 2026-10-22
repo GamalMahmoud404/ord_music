@@ -24,7 +24,21 @@ Redeploy after changing environment variables. Do not prefix the service role ke
 
 **If the upload request returns `503`**, the deployment does not have a usable `SUPABASE_URL` and/or `SUPABASE_SERVICE_ROLE_KEY`. The endpoint returns a JSON error naming the missing setting. Adding code alone cannot supply these secret values; add them in Vercel and redeploy. `SUPABASE_STORAGE_BUCKET` is optional because the app defaults it to `tracks`.
 
-## 3. Limits and testing
+## 3. Move songs that were uploaded before Supabase was configured
+
+Songs uploaded while the local fallback was active have URLs such as `/uploads/<uuid>.mp3`. Those files exist only in the local `public/uploads/` folder, which is gitignored, so Vercel returns `404` for them and the player shows **Audio could not start**. Uploading new songs does not repair the old records; they need to be moved to Supabase and their MongoDB URLs updated.
+
+After adding the Supabase values to your local `.env`, run:
+
+```bash
+npm run storage:migrate
+```
+
+The script creates the public `tracks` bucket if it is missing, uploads each file from `public/uploads/`, and updates the matching MongoDB track **in place** (no duplicate tracks). It is safe to run again; files are uploaded with upsert enabled. Then add the same Supabase variables to Vercel, redeploy, and hard-refresh the page.
+
+If you prefer not to use Supabase for the old files, re-upload those songs through the app after Supabase is configured and delete the old entries that still point to `/uploads/`.
+
+## 4. Limits and testing
 
 The app currently accepts audio files up to 50 MB each (100 MB per selected batch) and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly. The browser sends the raw audio file bytes to the signed Supabase URL (or to the local upload endpoint) rather than wrapping the file in multipart FormData.
 
