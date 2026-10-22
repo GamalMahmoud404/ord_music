@@ -42,6 +42,19 @@ npm run dev
 
 Open http://localhost:3000.
 
+## Deploying to Vercel
+
+If the app opens on Vercel but the library is empty, work through this checklist:
+
+1. **Environment variable:** In Vercel → Project Settings → Environment Variables, add `DATABASE_URL` with exactly the same Atlas connection string you use locally. Add it to **Production** and **Preview** if you open preview URLs. Redeploy after adding or changing it. A local `.env` file is not uploaded to Vercel.
+2. **Database name:** keep the `/orb_music` path before the query string. If Vercel points to a different database or cluster than your local setup, it will connect successfully but show no songs.
+3. **Network Access:** in MongoDB Atlas → Network Access, allow `0.0.0.0/0`. Vercel functions use dynamic IP addresses, so allowing only your home IP blocks them.
+4. **Schema:** run `npm run db:push` once from your machine using the Atlas URL. `npm run build` on Vercel runs `prisma generate`, but it does not push the schema or copy data.
+5. **Check the API:** open `https://your-deployment.vercel.app/api/tracks` in a browser. It returns a JSON error describing the problem. Also check Vercel → Deployments → Functions → Logs.
+6. **Normalize the value:** paste the URL without surrounding quotes in the Vercel dashboard. URL-encode special characters in the database password.
+
+The app now keeps a visible error panel with a **Retry** button when the library cannot be loaded, instead of hiding the error in a short toast.
+
 ## Add songs from your computer
 
 1. Start the app and connect the database.

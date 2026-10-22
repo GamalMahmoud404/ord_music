@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { databaseConfigurationError, databaseErrorMessage } from "@/lib/database-error";
+import { databaseConfigurationError, databaseErrorCode, databaseErrorMessage } from "@/lib/database-error";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -85,7 +85,8 @@ export async function POST(request: Request) {
       { status: 409 },
     );
   } catch (error) {
-    console.error("POST /api/tracks/register failed:", error);
-    return NextResponse.json({ error: databaseErrorMessage(error) }, { status: 500 });
+    const code = databaseErrorCode(error);
+    console.error("POST /api/tracks/register failed:", code ?? "no Prisma code", error);
+    return NextResponse.json({ error: databaseErrorMessage(error), ...(code ? { code } : {}) }, { status: 500 });
   }
 }

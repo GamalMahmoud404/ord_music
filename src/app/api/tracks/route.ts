@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { databaseConfigurationError, databaseErrorMessage } from "@/lib/database-error";
+import { databaseConfigurationError, databaseErrorCode, databaseErrorMessage } from "@/lib/database-error";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,9 +20,10 @@ export async function GET() {
     const tracks = await prisma.track.findMany({ orderBy: [{ order: "asc" }, { createdAt: "desc" }] });
     return NextResponse.json(tracks, { headers: NO_STORE });
   } catch (error) {
-    console.error("GET /api/tracks failed:", error);
+    const code = databaseErrorCode(error);
+    console.error("GET /api/tracks failed:", code ?? "no Prisma code", error);
     return NextResponse.json(
-      { error: databaseErrorMessage(error) },
+      { error: databaseErrorMessage(error), ...(code ? { code } : {}) },
       { status: 500, headers: NO_STORE },
     );
   }

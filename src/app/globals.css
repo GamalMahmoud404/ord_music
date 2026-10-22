@@ -52,3 +52,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .upload-spinner{display:inline-block;width:14px;height:14px;border:2px solid #ffffff55;border-top-color:currentColor;border-radius:50%;animation:upload-spin .7s linear infinite}
 @keyframes upload-spin{to{transform:rotate(360deg)}}
 @media(max-width:600px){.upload-metadata{grid-template-columns:1fr;gap:7px}.upload-metadata label{grid-template-columns:55px minmax(0,1fr);align-items:center}.upload-metadata input{height:34px}.track-count-pill{font-size:9px;padding:7px 9px}}
+
+/* Persistent database/loading diagnostics */
+.library-error{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin:0 0 18px;padding:13px 15px;border:1px solid #ff8d9a45;border-radius:14px;background:#ff7b9212;font-size:11px;line-height:1.6}
+.library-error>div{display:flex;flex-direction:column;gap:4px;min-width:0;overflow-wrap:anywhere}
+.library-error strong{color:#ffecf0;font-size:12px}
+.library-error span{color:#ffc4cd}
+.library-error small{color:#d3a7b3;font-size:10px}
+.library-error button{flex:0 0 auto;border:1px solid #ff8d9a55;border-radius:9px;background:#ffffff12;color:#fff;padding:8px 12px;font-size:11px;font-weight:700}
+.library-error button:hover{background:#ffffff20}
+@media(max-width:600px){.library-error{flex-direction:column}.library-error button{width:100%}}

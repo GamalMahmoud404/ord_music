@@ -99,6 +99,8 @@ async function loadTracks(): Promise<Track[]> {
 export default function HomePage() {
   const [activeTab, setActiveTab] = useState("Library");
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [loadingTracks, setLoadingTracks] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [currentId, setCurrentId] = useState("");
   const [isPlaying, setIsPlaying] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -130,7 +132,17 @@ export default function HomePage() {
   const toastTimerRef = useRef<number | null>(null);
 
   const currentIndex = tracks.findIndex((track) => track.id === currentId);
-  const current = tracks[currentIndex] ?? tracks[0] ?? { id: "", title: "Your library is empty", artist: "Add your first song", album: "", duration: "0:00", mood: "Uncategorized", color: "#8deaff", cover: "", audio: "" };
+  const current = tracks[currentIndex] ?? tracks[0] ?? {
+    id: "",
+    title: loadError ? "Library unavailable" : "Your library is empty",
+    artist: loadError ? "Check the database settings" : "Add your first song",
+    album: "",
+    duration: "0:00",
+    mood: "Uncategorized",
+    color: "#8deaff",
+    cover: "",
+    audio: "",
+  };
   const moodStats = useMemo(() => {
     const counts = new Map<string, { count: number; color: string }>();
     tracks.forEach((track) => {
@@ -148,10 +160,16 @@ export default function HomePage() {
       .then((data) => {
         if (cancelled) return;
         setTracks(data);
-        if (data.length) setCurrentId(data[0].id);
+        setCurrentId((previous) => data.some((track) => track.id === previous) ? previous : (data[0]?.id ?? ""));
+        setLoadError("");
       })
-      .catch(() => {
-        if (!cancelled) setToast("Could not load songs. Check the API error and configure MongoDB in .env, then run npm run db:push.");
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setLoadError(error instanceof Error ? error.message : "Could not load your library.");
+        setToast("Could not load songs from the database.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingTracks(false);
       });
     try {
       const savedUser = readStoredUser(localStorage.getItem("orb-music-user"));
@@ -220,6 +238,23 @@ export default function HomePage() {
     setToast(message);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToast(""), 2600);
+  }
+
+  async function retryLoadTracks() {
+    setLoadingTracks(true);
+    try {
+      const data = await loadTracks();
+      setTracks(data);
+      setCurrentId((previous) => data.some((track) => track.id === previous) ? previous : (data[0]?.id ?? ""));
+      setLoadError("");
+      notify(data.length ? `Loaded ${data.length} song${data.length === 1 ? "" : "s"}.` : "The database is reachable, but it contains no songs.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not load your library.";
+      setLoadError(message);
+      notify(message);
+    } finally {
+      setLoadingTracks(false);
+    }
   }
 
   function startAudioPlayback() {
@@ -471,6 +506,16 @@ export default function HomePage() {
 
       <div className="dashboard">
         <section className="album-panel glass">
+          {loadError && (
+            <div className="library-error" role="alert">
+              <div>
+                <strong>Your songs could not be loaded</strong>
+                <span>{loadError}</span>
+                <small>On Vercel, check DATABASE_URL under Project Settings → Environment Variables (Production and Preview), allow 0.0.0.0/0 in MongoDB Atlas Network Access, then redeploy.</small>
+              </div>
+              <button type="button" onClick={retryLoadTracks} disabled={loadingTracks}>{loadingTracks ? "Retrying…" : "Retry"}</button>
+            </div>
+          )}
           <div className="album-hero">
             <div className="cover-wrap"><Image className="album-cover" src={current.cover || artistCover} alt={`${current.album || current.title} cover`} fill sizes="(max-width: 600px) 104px, (max-width: 1150px) 155px, 215px" unoptimized priority /><span className="cover-shine" /></div>
             <div className="album-details">
@@ -506,7 +551,14 @@ export default function HomePage() {
                 <span className="track-time">{track.duration}</span>
               </div>
             ))}
-            {filteredTracks.length === 0 && <div className="empty-state"><Music2 size={24}/><strong>No tracks found</strong><span>Try a different search or add songs to your favorites.</span></div>}
+            {loadingTracks && <div className="empty-state"><span className="upload-spinner"/><strong>Loading your library</strong><span>Connecting to the database…</span></div>}
+            {!loadingTracks && filteredTracks.length === 0 && (
+              <div className="empty-state">
+                <Music2 size={24}/>
+                <strong>{loadError ? "Your library could not be loaded" : "No tracks found"}</strong>
+                <span>{loadError ? "Fix the database settings above, then press Retry." : activeTab === "Favorites" ? "Favorite songs to see them here." : "Try a different search, or add songs to your library."}</span>
+              </div>
+            )}
           </div>
           <div className="library-footnote"><span><Music size={14}/> Songs loaded from your database</span><span>{filteredTracks.length} tracks</span></div>
         </section>
