@@ -1,6 +1,8 @@
 # Fixing audio upload on Vercel (413 and invalid JSON)
 
-The app no longer sends the audio bytes through a Next.js/Vercel API route. It asks the server for a short-lived Supabase Storage signed upload URL, uploads each audio file directly from the browser to Supabase, then saves only the public audio URL and track metadata in MongoDB. This avoids Vercel's request-body size limit and prevents HTML/text error pages from being blindly parsed as JSON.
+On deployments the app no longer sends the audio bytes through a Next.js/Vercel API route. It asks the server for a short-lived Supabase Storage signed upload URL, uploads each audio file directly from the browser to Supabase, then saves only the public audio URL and track metadata in MongoDB. This avoids Vercel's request-body size limit and prevents HTML/text error pages from being blindly parsed as JSON.
+
+For local development, Supabase is optional: if neither `SUPABASE_URL` nor `SUPABASE_SERVICE_ROLE_KEY` is set, `/api/tracks/upload` returns a local upload target and the bytes are written to `public/uploads/`. The fallback is automatically disabled on Vercel, Netlify, and AWS Lambda because those filesystems are read-only or ephemeral.
 
 ## 1. Set up Supabase Storage
 
@@ -24,6 +26,6 @@ Redeploy after changing environment variables. Do not prefix the service role ke
 
 ## 3. Limits and testing
 
-The app currently accepts audio files up to 50 MB each and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly. The browser now sends the raw audio file bytes to the signed Supabase URL rather than wrapping the file in multipart FormData.
+The app currently accepts audio files up to 50 MB each (100 MB per selected batch) and sends them one at a time. The Supabase Storage bucket's file size limit must allow at least that size. If you get a storage upload error, check the bucket limit, service key, project URL, and that the bucket name matches exactly. The browser sends the raw audio file bytes to the signed Supabase URL (or to the local upload endpoint) rather than wrapping the file in multipart FormData.
 
 Run `npm install`, then `npm run build` locally before pushing. Make sure `.env` remains ignored by Git.

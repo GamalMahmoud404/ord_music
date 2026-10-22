@@ -47,7 +47,7 @@ Open http://localhost:3000.
 1. Start the app and connect the database.
 2. In Orb Music, fill in Artist, Album, and Mood if you know them. These fields apply to the next selected batch; leave them blank if they do not apply.
 3. Click **Add songs** and select one or more audio files.
-4. The app reads the audio duration in the browser, uploads the audio files to `public/uploads/`, and saves each track's metadata and audio URL in MongoDB.
+4. The app reads the audio duration in the browser, uploads the audio files either to Supabase Storage (when configured) or to `public/uploads/` on a local server, and saves each track's metadata and audio URL in MongoDB.
 
 Supported extensions: MP3, WAV, OGG/OGA, M4A, AAC, FLAC, and WEBM. Each file is limited to 50 MB and the combined batch to 100 MB. Track titles are generated from the filenames, with a suffix added if a title already exists.
 
@@ -57,11 +57,11 @@ Never share `.env` or put real database credentials in `.env.example`. If a data
 
 ## Storage note
 
-The MongoDB record and the audio file are both required for playback. This implementation stores uploaded audio on the same server in `public/uploads/`; that works for local development and a persistent server, but may not persist across redeploys or work reliably on serverless hosting with an ephemeral filesystem. For Vercel deployments, this version uses Supabase Storage signed uploads and stores the public audio URL in MongoDB. Configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in Vercel and redeploy; without them, `/api/tracks/upload` returns 503. See `FIX_UPLOAD.md` for setup instructions. The upload endpoint is intended for local/private use; add real authentication, authorization, and rate limiting before exposing uploads publicly.
+The MongoDB record and the audio file are both required for playback. When `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are not set, a local server stores uploaded audio in `public/uploads/`; that works for local development and a persistent server, but may not persist across redeploys. On Vercel (and other read-only/function hosts) the local fallback is disabled: configure `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` and redeploy, otherwise `/api/tracks/upload` returns 503. Supabase uploads use signed URLs and store the public audio URL in MongoDB. See `FIX_UPLOAD.md` for setup instructions. The upload endpoint is intended for local/private use; add real authentication, authorization, and rate limiting before exposing uploads publicly.
 
 ## Current limitations
 
 - Account sign-in is still a browser-only profile preview, not secure authentication. Do not enter a real password.
 - Favorites are saved in this browser's local storage, not in MongoDB.
 - Radio is not connected to a live station provider.
-- Uploaded song files are stored locally by the server; keep backups of `public/uploads/` along with your database.
+- Without Supabase, uploaded song files are stored locally in `public/uploads/`; keep backups of that folder along with your database. With Supabase, back up the storage bucket instead.

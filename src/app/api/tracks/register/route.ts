@@ -1,3 +1,5 @@
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { databaseConfigurationError, databaseErrorMessage } from "@/lib/database-error";
@@ -6,6 +8,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const COLORS = ["#8deaff", "#ff9bd0", "#82f2c7", "#a9c5ff", "#ffc477", "#ffad8c"];
+const LOCAL_AUDIO_PATTERN = /^\/(?:api\/audio|uploads)\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(?:mp3|wav|ogg|oga|m4a|aac|flac|webm)$/i;
 function cleanText(value: unknown, fallback: string, maxLength = 120) {
   if (typeof value !== "string") return fallback;
   return value.trim().slice(0, maxLength) || fallback;
@@ -21,7 +24,6 @@ export async function POST(request: Request) {
   if (configurationError) return NextResponse.json({ error: configurationError }, { status: 503 });
   const supabaseUrl = process.env.SUPABASE_URL?.trim().replace(/\/$/, "");
   const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || "tracks";
-  if (!supabaseUrl) return NextResponse.json({ error: "Audio storage is not configured." }, { status: 503 });
 
   try {
     const body = await request.json() as {
@@ -29,9 +31,21 @@ export async function POST(request: Request) {
       durationSeconds?: unknown; audio?: unknown;
     };
     const audio = typeof body.audio === "string" ? body.audio : "";
-    const expectedPrefix = `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucket)}/audio/`;
-    if (!audio.startsWith(expectedPrefix) || audio.includes("..")) {
+    const expectedPrefix = supabaseUrl ? `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(bucket)}/audio/` : "";
+    const isSupabaseAudio = Boolean(expectedPrefix) && audio.startsWith(expectedPrefix) && !audio.includes("..");
+    const isLocalAudio = LOCAL_AUDIO_PATTERN.test(audio);
+    if (!isSupabaseAudio && !isLocalAudio) {
       return NextResponse.json({ error: "The uploaded audio URL is invalid. Please upload the song again." }, { status: 400 });
+    }
+    if (isLocalAudio) {
+      // Only register files that the local upload endpoint actually wrote.
+      const localPath = path.join(process.cwd(), "public", "uploads", path.basename(audio));
+      try {
+        const info = await stat(localPath);
+        if (!info.isFile()) throw new Error("Not a file");
+      } catch {
+        return NextResponse.json({ error: "The uploaded audio file was not found on the server. Please upload the song again." }, { status: 400 });
+      }
     }
     const fileName = typeof body.fileName === "string" ? body.fileName : "";
     const baseTitle = fileName.replace(/\\/g, "/").split("/").pop()?.replace(/\.[^.]+$/, "").replace(/[._]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180) || "Untitled track";

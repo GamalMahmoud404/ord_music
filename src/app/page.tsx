@@ -1,5 +1,7 @@
  "use client";
 
+import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines, CircleUserRound, Disc3, Heart, ListMusic,
@@ -21,14 +23,77 @@ type Track = {
 };
 
 const artistCover = "/orb-cover.svg";
+const MAX_UPLOAD_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_UPLOAD_BATCH_SIZE = 100 * 1024 * 1024;
 
 type User = { name: string; email: string };
+
+// Changing the audio source while play() is pending rejects with AbortError.
+// That is expected when skipping tracks quickly and is not a playback failure.
+function isPlaybackAbort(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
 
 function formatTime(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${String(secs).padStart(2, "0")}`;
+}
+
+function readStoredUser(raw: string | null): User | null {
+  if (!raw) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!value || typeof value !== "object") return null;
+    const { name, email } = value as { name?: unknown; email?: unknown };
+    if (typeof name !== "string" || typeof email !== "string") return null;
+    if (!name.trim() || !email.trim()) return null;
+    return { name, email };
+  } catch {
+    return null;
+  }
+}
+
+function readStoredFavorites(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    return value.filter((id): id is string => typeof id === "string" && Boolean(id));
+  } catch {
+    return [];
+  }
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  let data: unknown;
+  try { data = text ? JSON.parse(text) : {}; }
+  catch { throw new Error(`Server returned a non-JSON response (${response.status}). ${text.slice(0, 180)}`); }
+  if (!response.ok) {
+    const message = data && typeof data === "object" && "error" in data && typeof (data as { error?: unknown }).error === "string"
+      ? (data as { error: string }).error
+      : `Request failed (${response.status}).`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+// One automatic retry: on serverless hosting a cold start plus a slow database
+// can fail the first list request, which used to leave the library empty even
+// though the songs exist in the database.
+async function loadTracks(): Promise<Track[]> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await readJsonResponse<Track[]>(await fetch("/api/tracks", { cache: "no-store" }));
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+  }
+  throw lastError;
 }
 
 export default function HomePage() {
@@ -89,29 +154,39 @@ export default function HomePage() {
         if (!cancelled) setToast("Could not load songs. Check the API error and configure MongoDB in .env, then run npm run db:push.");
       });
     try {
-      const savedUser = localStorage.getItem("orb-music-user");
-      if (savedUser) setUser(JSON.parse(savedUser) as User);
-      const savedFavorites = localStorage.getItem("orb-music-favorites");
-      if (savedFavorites) setFavorites(JSON.parse(savedFavorites) as string[]);
+      const savedUser = readStoredUser(localStorage.getItem("orb-music-user"));
+      if (savedUser) setUser(savedUser);
+      setFavorites(readStoredFavorites(localStorage.getItem("orb-music-favorites")));
     } catch {
-      // Ignore invalid browser storage.
+      // Ignore browser storage that is unavailable (private mode, disabled cookies).
     }
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
     try { localStorage.setItem("orb-music-favorites", JSON.stringify(favorites)); } catch {}
   }, [favorites]);
 
-  // The search panel advertises an ESC shortcut, so Escape must actually close it.
+  // The search panel advertises an ESC shortcut, and modal dialogs should also
+  // close with Escape instead of trapping keyboard users.
   useEffect(() => {
-    if (!searchOpen) return;
+    if (!searchOpen && !authOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSearchOpen(false);
+      if (event.key !== "Escape") return;
+      setSearchOpen(false);
+      setAuthOpen(false);
+      setAuthError("");
+      setAuthPassword("");
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [searchOpen]);
+  }, [searchOpen, authOpen]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -124,7 +199,8 @@ export default function HomePage() {
     if (!audio) return;
     if (isPlaying) {
       const promise = audio.play();
-      if (promise) promise.catch(() => {
+      if (promise) promise.catch((error: unknown) => {
+        if (isPlaybackAbort(error)) return;
         setIsPlaying(false);
         setToast("Audio could not start. Check your connection and try again.");
       });
@@ -146,24 +222,48 @@ export default function HomePage() {
     toastTimerRef.current = window.setTimeout(() => setToast(""), 2600);
   }
 
+  function startAudioPlayback() {
+    const audio = audioRef.current;
+    if (!audio || !current.audio) return;
+    const promise = audio.play();
+    if (promise) {
+      promise.catch((error: unknown) => {
+        if (isPlaybackAbort(error)) return;
+        setIsPlaying(false);
+        notify("Audio could not start. Check your connection and try again.");
+      });
+    }
+  }
+
   function selectTrack(id: string, autoplay = true) {
-    setCurrentId(id);
-    setProgress(0);
-    setDuration(0);
+    if (!id) return;
+    // Keep the known duration when the same track is selected again (for example
+    // the hero Play button resuming a paused song): a same-source play does not
+    // emit loadedmetadata again, so clearing it would break the timeline.
+    if (id !== currentId) {
+      setCurrentId(id);
+      setProgress(0);
+      setDuration(0);
+    }
     if (autoplay) setIsPlaying(true);
   }
 
   // Restarting the already-selected track (single-track library, repeat, or shuffle
-  // landing on the same song) must replay it instead of doing nothing.
+  // landing on the same song) must replay it instead of doing nothing. After
+  // `ended`, the browser has already paused the element, so calling play() again
+  // is required even though React state still says isPlaying === true.
   function restartPlayback() {
     const audio = audioRef.current;
-    if (audio) audio.currentTime = 0;
+    if (!audio) return;
+    audio.currentTime = 0;
     setProgress(0);
-    setDuration(0);
+    if (Number.isFinite(audio.duration)) setDuration(audio.duration);
     setIsPlaying(true);
+    startAudioPlayback();
   }
 
   function toggleFavorite(id: string) {
+    if (!id) return;
     setFavorites((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
   }
 
@@ -192,16 +292,17 @@ export default function HomePage() {
   function handleAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthError("");
-    if (!authEmail.includes("@") || authPassword.length < 6) {
+    const email = authEmail.trim();
+    if (!email.includes("@") || authPassword.length < 6) {
       setAuthError("Enter a valid email and a password with at least 6 characters.");
       return;
     }
-    const displayName = authMode === "signup" ? authName.trim() : authEmail.split("@")[0];
+    const displayName = authMode === "signup" ? authName.trim() : email.split("@")[0];
     if (authMode === "signup" && !displayName) {
       setAuthError("Please enter your name.");
       return;
     }
-    const nextUser = { name: displayName, email: authEmail.trim() };
+    const nextUser = { name: displayName, email };
     setUser(nextUser);
     try { localStorage.setItem("orb-music-user", JSON.stringify(nextUser)); } catch {}
     setAuthOpen(false);
@@ -229,47 +330,44 @@ export default function HomePage() {
     return new Promise((resolve) => {
       const objectUrl = URL.createObjectURL(file);
       const probe = new Audio();
+      let settled = false;
+      const finish = (seconds: number) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        probe.onloadedmetadata = null;
+        probe.onerror = null;
+        URL.revokeObjectURL(objectUrl);
+        resolve(Number.isFinite(seconds) && seconds > 0 ? seconds : 0);
+      };
+      // Some browsers never fire either event for an unreadable codec, which
+      // used to leave the upload spinner running forever.
+      const timeout = window.setTimeout(() => finish(0), 15000);
       probe.preload = "metadata";
-      probe.onloadedmetadata = () => { const seconds = probe.duration; URL.revokeObjectURL(objectUrl); resolve(Number.isFinite(seconds) ? seconds : 0); };
-      probe.onerror = () => { URL.revokeObjectURL(objectUrl); resolve(0); };
+      probe.onloadedmetadata = () => finish(probe.duration);
+      probe.onerror = () => finish(0);
       probe.src = objectUrl;
     });
-  }
-
-  async function readJsonResponse<T>(response: Response): Promise<T> {
-    const text = await response.text();
-    let data: unknown;
-    try { data = text ? JSON.parse(text) : {}; }
-    catch { throw new Error(`Server returned a non-JSON response (${response.status}). ${text.slice(0, 180)}`); }
-    if (!response.ok) {
-      const message = data && typeof data === "object" && "error" in data && typeof (data as { error?: unknown }).error === "string"
-        ? (data as { error: string }).error
-        : `Request failed (${response.status}).`;
-      throw new Error(message);
-    }
-    return data as T;
-  }
-
-  // One automatic retry: on serverless hosting a cold start plus a slow database
-  // can fail the first list request, which used to leave the library empty even
-  // though the songs exist in the database.
-  async function loadTracks(): Promise<Track[]> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      try {
-        return await readJsonResponse<Track[]>(await fetch("/api/tracks", { cache: "no-store" }));
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, 700));
-      }
-    }
-    throw lastError;
   }
 
   async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(event.target.files ?? []);
     event.target.value = "";
     if (!files.length) return;
+    const oversized = files.find((file) => file.size > MAX_UPLOAD_FILE_SIZE);
+    if (oversized) {
+      const message = `"${oversized.name}" is larger than 50 MB. Choose a smaller audio file.`;
+      setUploadError(message);
+      notify(message);
+      return;
+    }
+    const batchSize = files.reduce((total, file) => total + file.size, 0);
+    if (batchSize > MAX_UPLOAD_BATCH_SIZE) {
+      const message = "The selected batch is larger than 100 MB. Upload fewer songs at a time.";
+      setUploadError(message);
+      notify(message);
+      return;
+    }
     setUploading(true);
     setUploadError("");
     let added = 0;
@@ -336,10 +434,10 @@ export default function HomePage() {
       <input ref={uploadInputRef} className="visually-hidden" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.m4a,.aac,.flac,.webm" multiple onChange={handleUpload} />
       <div className="ambient ambient-a" /><div className="ambient ambient-b" /><div className="ambient ambient-c" />
       <header className="topbar">
-        <a className="brand" href="#" aria-label="Orb Music home" onClick={() => setActiveTab("Library")}>
+        <Link className="brand" href="/" aria-label="Orb Music home" onClick={(event) => { event.preventDefault(); changeTab("Library"); }}>
           <span className="brand-icon"><AudioLines size={25} strokeWidth={2.3} /></span>
           <span>orb<span className="brand-light">music</span></span>
-        </a>
+        </Link>
 
         <nav className={`main-nav ${mobileMenu ? "nav-open" : ""}`} aria-label="Main navigation">
           {["Listen now", "Moods", "Library", "Radio", "Favorites"].map((tab) => (
@@ -374,7 +472,7 @@ export default function HomePage() {
       <div className="dashboard">
         <section className="album-panel glass">
           <div className="album-hero">
-            <div className="cover-wrap"><img className="album-cover" src={current.cover || artistCover} alt={`${current.album || current.title} cover`} /><span className="cover-shine" /></div>
+            <div className="cover-wrap"><Image className="album-cover" src={current.cover || artistCover} alt={`${current.album || current.title} cover`} fill sizes="(max-width: 600px) 104px, (max-width: 1150px) 155px, 215px" unoptimized priority /><span className="cover-shine" /></div>
             <div className="album-details">
               <div className="eyebrow-line"><span className="eyebrow">NOW IN YOUR LIBRARY</span><span className="mood-chip"><i style={{background:current.color}}/>{current.mood || "Uncategorized"}</span></div>
               <h1>{current.album || current.title}</h1>
@@ -383,7 +481,7 @@ export default function HomePage() {
               <div className="hero-controls">
                 <button className="primary-play" disabled={!tracks.length} onClick={() => isPlaying ? setIsPlaying(false) : selectTrack(current.id)}>{isPlaying ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}{isPlaying ? "Pause" : "Play track"}</button>
                 <button className="round-control" aria-label="Add songs from your device" title="Add songs" disabled={uploading} onClick={() => uploadInputRef.current?.click()}>{uploading ? <span className="upload-spinner"/> : <Upload size={19}/>}</button>
-                <button className={`round-control ${favorites.includes(current.id) ? "control-on" : ""}`} aria-label="Favorite current song" onClick={() => toggleFavorite(current.id)}><Heart size={19} fill={favorites.includes(current.id) ? "currentColor" : "none"}/></button>
+                <button className={`round-control ${favorites.includes(current.id) ? "control-on" : ""}`} aria-label="Favorite current song" disabled={!tracks.length} onClick={() => toggleFavorite(current.id)}><Heart size={19} fill={favorites.includes(current.id) ? "currentColor" : "none"}/></button>
                 <button className={`round-control ${shuffle ? "control-on" : ""}`} aria-label="Shuffle" onClick={() => setShuffle(!shuffle)}><Shuffle size={19}/></button>
               </div>
             </div>
@@ -402,7 +500,7 @@ export default function HomePage() {
             {filteredTracks.map((track, index) => (
               <div key={track.id} className={`track-row ${current.id === track.id ? "track-active" : ""}`} onDoubleClick={() => selectTrack(track.id)}>
                 <button className="track-index" aria-label={`Play ${track.title}`} onClick={() => selectTrack(track.id)}>{current.id === track.id && isPlaying ? <AudioLines size={16} className="playing-bars"/> : <span>{String(index + 1).padStart(2, "0")}</span>}</button>
-                <button className="track-main" onClick={() => current.id === track.id ? setIsPlaying(!isPlaying) : selectTrack(track.id)}><img src={track.cover || artistCover} alt="" /><span className="track-copy"><strong>{track.title}</strong><small>{track.artist}</small></span></button>
+                <button className="track-main" onClick={() => current.id === track.id ? setIsPlaying(!isPlaying) : selectTrack(track.id)}><Image src={track.cover || artistCover} alt="" width={39} height={39} unoptimized /><span className="track-copy"><strong>{track.title}</strong><small>{track.artist}</small></span></button>
                 <span className="track-mood"><span className="mood-chip"><i style={{background:track.color}}/>{track.mood}</span></span>
                 <button className={`track-heart ${favorites.includes(track.id) ? "heart-on" : ""}`} aria-label={`Favorite ${track.title}`} onClick={() => toggleFavorite(track.id)}><Heart size={17} fill={favorites.includes(track.id) ? "currentColor" : "none"}/></button>
                 <span className="track-time">{track.duration}</span>
@@ -424,7 +522,7 @@ export default function HomePage() {
           </section>
 
           <section className="artist-panel glass">
-            <div className="artist-image-wrap"><img className="artist-image" src={current.cover || artistCover} alt={`${current.artist} cover`} /><span className="artist-image-gradient"/></div>
+            <div className="artist-image-wrap"><Image className="artist-image" src={current.cover || artistCover} alt={`${current.artist} cover`} fill sizes="(max-width: 850px) 100vw, 400px" unoptimized /><span className="artist-image-gradient"/></div>
             <div className="artist-content">
               <div className="artist-heading"><div><span className="section-kicker">CURRENT SELECTION</span><h2>{current.artist}</h2></div><span className="track-count-pill">{tracks.length} tracks</span></div>
               <p><strong>{current.title}</strong>{current.album ? ` · ${current.album}` : ""}. This panel reflects the song currently selected in your library.</p>
@@ -437,9 +535,9 @@ export default function HomePage() {
       </div>
 
       <footer className="player-bar">
-        <audio ref={audioRef} src={current.audio || undefined} preload="metadata" onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} onEnded={() => repeat ? (eventReset()) : nextTrack()} onError={() => { if (isPlaying) { setIsPlaying(false); notify("This audio could not load. Check the track URL in your database."); } }} />
-        <div className="now-playing"><img src={current.cover || artistCover} alt="" /><div className="now-copy"><strong>{current.title}</strong><span>{current.artist}</span></div><button className={`now-heart ${favorites.includes(current.id) ? "heart-on" : ""}`} aria-label="Favorite current track" onClick={() => toggleFavorite(current.id)}><Heart size={17} fill={favorites.includes(current.id) ? "currentColor" : "none"}/></button></div>
-        <div className="player-center"><div className="transport-controls"><button className={shuffle ? "transport-active" : ""} aria-label="Shuffle" onClick={() => setShuffle(!shuffle)}><Shuffle size={17}/></button><button aria-label="Previous track" onClick={previousTrack}><SkipBack size={19} fill="currentColor"/></button><button className="transport-play" aria-label={isPlaying ? "Pause" : "Play"} onClick={() => setIsPlaying(!isPlaying)}>{isPlaying ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button aria-label="Next track" onClick={nextTrack}><SkipForward size={19} fill="currentColor"/></button><button className={repeat ? "transport-active" : ""} aria-label="Repeat" onClick={() => setRepeat(!repeat)}><Repeat2 size={17}/></button></div><div className="timeline"><span>{formatTime(progress)}</span><input aria-label="Track progress" type="range" min="0" max={duration || 100} value={Math.min(progress, duration || 100)} onChange={(event) => { const value = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = value; setProgress(value); }} style={{"--range-progress":`${duration ? progress / duration * 100 : 0}%`} as React.CSSProperties}/><span>{duration ? formatTime(duration) : current.duration}</span></div></div>
+        <audio ref={audioRef} src={current.audio || undefined} preload="metadata" onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)} onEnded={() => repeat ? restartPlayback() : nextTrack()} onError={() => { if (isPlaying) { setIsPlaying(false); notify("This audio could not load. Check the track URL in your database."); } }} />
+        <div className="now-playing"><Image src={current.cover || artistCover} alt="" width={48} height={48} unoptimized /><div className="now-copy"><strong>{current.title}</strong><span>{current.artist}</span></div><button className={`now-heart ${favorites.includes(current.id) ? "heart-on" : ""}`} aria-label="Favorite current track" disabled={!tracks.length} onClick={() => toggleFavorite(current.id)}><Heart size={17} fill={favorites.includes(current.id) ? "currentColor" : "none"}/></button></div>
+        <div className="player-center"><div className="transport-controls"><button className={shuffle ? "transport-active" : ""} aria-label="Shuffle" onClick={() => setShuffle(!shuffle)}><Shuffle size={17}/></button><button aria-label="Previous track" disabled={!tracks.length} onClick={previousTrack}><SkipBack size={19} fill="currentColor"/></button><button className="transport-play" aria-label={isPlaying ? "Pause" : "Play"} disabled={!tracks.length} onClick={() => setIsPlaying(!isPlaying)}>{isPlaying ? <Pause size={17} fill="currentColor"/> : <Play size={17} fill="currentColor"/>}</button><button aria-label="Next track" disabled={!tracks.length} onClick={nextTrack}><SkipForward size={19} fill="currentColor"/></button><button className={repeat ? "transport-active" : ""} aria-label="Repeat" onClick={() => setRepeat(!repeat)}><Repeat2 size={17}/></button></div><div className="timeline"><span>{formatTime(progress)}</span><input aria-label="Track progress" type="range" min="0" max={duration || 100} value={Math.min(progress, duration || 100)} onChange={(event) => { const value = Number(event.target.value); if (audioRef.current) audioRef.current.currentTime = value; setProgress(value); }} style={{"--range-progress":`${duration ? progress / duration * 100 : 0}%`} as React.CSSProperties}/><span>{duration ? formatTime(duration) : current.duration}</span></div></div>
         <div className="player-right"><span className="volume-icon"><Volume2 size={18}/></span><input aria-label="Volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} style={{"--range-progress":`${volume}%`} as React.CSSProperties}/><button aria-label="Queue" onClick={() => notify("Queue is ready for the next version.")}><ListMusic size={19}/></button></div>
       </footer>
 
@@ -449,10 +547,4 @@ export default function HomePage() {
       <div className="copyright">ORBIT YOUR OWN SOUND <span>·</span> ORB MUSIC © 2026</div>
     </main>
   );
-
-  function eventReset() {
-    if (audioRef.current) audioRef.current.currentTime = 0;
-    setProgress(0);
-    setIsPlaying(true);
-  }
 }
